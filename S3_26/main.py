@@ -92,3 +92,4 @@ fitted_models = [m.fit(X_train_3, y_train) for m in tqdm(models)]
 # fit models
 # pca
 # hyperparameter tuning
+# xgboost
