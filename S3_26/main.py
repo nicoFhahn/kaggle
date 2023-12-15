@@ -10,12 +10,10 @@ from sklearn.ensemble import ExtraTreesClassifier, RandomForestClassifier
 from sklearn.neighbors import KNeighborsClassifier, LocalOutlierFactor
 from sklearn.discriminant_analysis import LinearDiscriminantAnalysis, QuadraticDiscriminantAnalysis
 from sklearn.svm import LinearSVC
-from sklearn.linear_model import LogisticRegression, RidgeClassifier
+from sklearn.linear_model import LogisticRegression
 from sklearn.model_selection import train_test_split
 from sklearn.metrics import log_loss
 from sklearn.preprocessing import LabelEncoder, StandardScaler, RobustScaler
-from sklearn.experimental import enable_halving_search_cv
-from sklearn.model_selection import HalvingRandomSearchCV
 from imblearn.over_sampling import SMOTE, ADASYN
 from sklearn.model_selection import cross_val_score, StratifiedKFold
 from collections import Counter
@@ -100,8 +98,8 @@ class multiclassifier():
     def train_models(self, models):
         self.trained_base_models = [model.fit(self.X_train, self.y_train) for model in tqdm(models)]
     def calc_log_loss(self, estimator):
-        probabilities_train = estimator.predict_proba(X_train)
-        probabilities_test = estimator.predict_proba(X_test)
+        probabilities_train = estimator.predict_proba(self.X_train)
+        probabilities_test = estimator.predict_proba(self.X_test)
         log_loss_train = log_loss(self.y_train, probabilities_train)
         log_loss_test = log_loss(self.y_test, probabilities_test)
         return log_loss_train, log_loss_test
@@ -171,7 +169,7 @@ class multiclassifier():
         return cv
     def objective_fun_rf(self, trial):
         params = {
-            'n_estimators': trial.suggest_int('iterations', 50, 1000),
+            'n_estimators': trial.suggest_int('n_estimators', 50, 1000),
             'criterion': trial.suggest_categorical('criterion', ['gini', 'entropy', 'log_loss']),
             'max_depth': trial.suggest_int('max_depth', 1, 30),
             'min_samples_split': trial.suggest_int('min_samples_split', 2, 50),
@@ -201,7 +199,39 @@ exgb_study = mc.tune_model(mc.objective_fun_xgb, n_trials=50)
 cat_study = mc.tune_model(mc.objective_fun_catboost, n_trials=50)
 lgbm_study = mc.tune_model(mc.objective_fun_lightgbm, n_trials=50)
 rf_study = mc.tune_model(mc.objective_fun_rf, n_trials=50)
-# todo: include scaler
+xgb_mod = xgb.XGBClassifier(**exgb_study.best_params)
+cat_mod = CatBoostClassifier(**cat_study.best_params)
+lgbm_mod = LGBMClassifier(**lgbm_study.best_params)
+rf_mod = RandomForestClassifier(**rf_study.best_params)
+xgb_mod.fit(mc.X_train, mc.y_train)
+cat_mod.fit(mc.X_train, mc.y_train)
+lgbm_mod.fit(mc.X_train, mc.y_train)
+rf_mod.fit(mc.X_train, mc.y_train)
+ll_xgb = log_loss(mc.y_test, xgb_mod.predict_proba(mc.X_test))
+ll_cat = log_loss(mc.y_test, cat_mod.predict_proba(mc.X_test))
+ll_lgbm = log_loss(mc.y_test, lgbm_mod.predict_proba(mc.X_test))
+ll_rf = log_loss(mc.y_test, rf_mod.predict_proba(mc.X_test))
+mc.fit_test_data(xgb_mod).to_csv("pred_xgb.csv", index=False)
+mc.fit_test_data(cat_mod).to_csv("pred_cat.csv", index=False)
+mc.fit_test_data(lgbm_mod).to_csv("pred_lgbm.csv", index=False)
+mc.fit_test_data(rf_mod).to_csv("pred_rf.csv", index=False)
+
+
+
+from sklearn.ensemble import VotingClassifier
+
+
+# lgb_1 = LGBMClassifier(**lgbm_params )
+# xgb_1 = XGBClassifier(**xgb_params )
+# cb_1 = CatBoostClassifier(**catboost_params, random_state=42)
+Ensemble = VotingClassifier(estimators = [('lgb', lgbm_model), ('xgb', xgb_model), ('CB', cat_model)],
+                            voting='soft',
+                            weights = [0.35,0.6,0.05]   #Adjust weighting since XGB performs better in local environment
+                            )
+Ensemble.fit(X, y_encoded)
+
+
+# todo: include scaler, impute with kmeans
 # from sklearn.preprocessing import MinMaxScaler
 
 # https://www.kaggle.com/code/ashishkumarak/liver-cirrhosis-survival-prediction-multiclass
