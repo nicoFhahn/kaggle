@@ -1,3 +1,5 @@
+import json
+import json
 import jenkspy
 import pandas as pd
 import seaborn as sns
@@ -10,15 +12,14 @@ from sklearn.ensemble import ExtraTreesClassifier, RandomForestClassifier
 from sklearn.neighbors import KNeighborsClassifier, LocalOutlierFactor
 from sklearn.discriminant_analysis import LinearDiscriminantAnalysis, QuadraticDiscriminantAnalysis
 from sklearn.svm import LinearSVC
-from sklearn.linear_model import LogisticRegression, RidgeClassifier
+from sklearn.linear_model import LogisticRegression
 from sklearn.model_selection import train_test_split
 from sklearn.metrics import log_loss
 from sklearn.preprocessing import LabelEncoder, StandardScaler, RobustScaler
-from sklearn.experimental import enable_halving_search_cv
-from sklearn.model_selection import HalvingRandomSearchCV
 from imblearn.over_sampling import SMOTE, ADASYN
 from sklearn.model_selection import cross_val_score, StratifiedKFold
 from collections import Counter
+from sklearn.decomposition import PCA
 from tqdm import tqdm
 from catboost import CatBoostClassifier
 from lightgbm import LGBMClassifier
@@ -29,7 +30,7 @@ pd.set_option('display.width', 1000)
 
 
 class multiclassifier():
-    def __init__(self, file_path, full_data=True, random_state=420, splits=8, use_gpu=False):
+    def __init__(self, file_path, full_data=True, random_state=420, splits=8, use_gpu=False, pca=False, pca_components=10):
         if full_data:
             self.train = pd.concat([pd.read_csv(f'{file_path}/train.csv'), pd.read_csv(f'{file_path}/train.csv')])
         else:
@@ -39,6 +40,8 @@ class multiclassifier():
         self.random_state = random_state
         self.splits = splits
         self.use_gpu = use_gpu
+        self.pca = pca
+        self.pca_components = pca_components
         self.base_models = [
             BernoulliNB(), ExtraTreesClassifier(random_state=random_state),
             RandomForestClassifier(random_state=random_state), KNeighborsClassifier(),
@@ -91,17 +94,25 @@ class multiclassifier():
         self.test = pd.concat([self.test, pd.get_dummies(self.test.Stage, prefix='Stage')], axis=1).drop(columns='Stage')
         if synthetic_data:
             X, y = SMOTE().fit_resample(self.train.drop(columns=['id', 'Status']), self.le.fit_transform(self.train['Status']))
+            if self.pca:
+                pca = PCA(n_components=self.pca_components)
+                X = pd.DataFrame(data=pca.fit_transform(X))
+                self.test = pd.concat([self.test["id"], pd.DataFrame(pca.transform(self.test.drop(columns="id")))], axis=1)
             self.X_train, self.X_test, self.y_train, self.y_test = train_test_split(X, y, test_size=test_size, random_state=self.random_state)
         else:
             X, y = self.train.drop(columns=['id']), self.le.fit_transform(self.train['Status'])
+            if self.pca:
+                pca = PCA(n_components=self.pca_components)
+                X = pd.concat([pd.DataFrame(data=pca.fit_transform(X.drop(columns="Status"))), X["Status"].reset_index(drop=True)], axis=1)
+                self.test = pd.concat([self.test["id"], pd.DataFrame(pca.transform(self.test.drop(columns="id")))], axis=1)
             self.X_train, self.X_test, self.y_train, self.y_test = train_test_split(X, y, test_size=test_size, random_state=self.random_state, stratify=y)
             self.X_train = self.X_train.drop(columns='Status')
             self.X_test = self.X_test.drop(columns='Status')
     def train_models(self, models):
         self.trained_base_models = [model.fit(self.X_train, self.y_train) for model in tqdm(models)]
     def calc_log_loss(self, estimator):
-        probabilities_train = estimator.predict_proba(X_train)
-        probabilities_test = estimator.predict_proba(X_test)
+        probabilities_train = estimator.predict_proba(self.X_train)
+        probabilities_test = estimator.predict_proba(self.X_test)
         log_loss_train = log_loss(self.y_train, probabilities_train)
         log_loss_test = log_loss(self.y_test, probabilities_test)
         return log_loss_train, log_loss_test
@@ -109,7 +120,7 @@ class multiclassifier():
         params = {
             'max_depth': trial.suggest_int('max_depth', 1, 9),
             'learning_rate': trial.suggest_loguniform('learning_rate', 0.01, 1.0),
-            'n_estimators': trial.suggest_int('n_estimators', 50, 500),
+            'n_estimators': trial.suggest_int('n_estimators', 50, 1000),
             'min_child_weight': trial.suggest_int('min_child_weight', 1, 10),
             'gamma': trial.suggest_loguniform('gamma', 1e-8, 1.0),
             'subsample': trial.suggest_loguniform('subsample', 0.01, 1.0),
@@ -194,39 +205,76 @@ class multiclassifier():
 
 
 
-mc = multiclassifier(file_path='S3_26', use_gpu=False)
-mc.preprocess_data(synthetic_data=True, test_size=.25, outlier_method='nearest', scaling_method="robust")
+mc = multiclassifier(file_path='S3_26', use_gpu=True, pca=True, pca_components=14, random_state=7918)
+mc.preprocess_data(synthetic_data=False, test_size=.25, outlier_method='keep', scaling_method="robust")
 mc.train_models(mc.base_models)
-exgb_study = mc.tune_model(mc.objective_fun_xgb, n_trials=50)
-cat_study = mc.tune_model(mc.objective_fun_catboost, n_trials=50)
-lgbm_study = mc.tune_model(mc.objective_fun_lightgbm, n_trials=50)
-rf_study = mc.tune_model(mc.objective_fun_rf, n_trials=50)
-rf_study.
-# todo: include scaler
+exgb_study = mc.tune_model(mc.objective_fun_xgb, n_trials=75)
+with open("S3_26/params_xgb.json", "w") as f:
+    json.dump(exgb_study.best_params, f)
+cat_study = mc.tune_model(mc.objective_fun_catboost, n_trials=75)
+with open("S3_26/params_catboost.json", "w") as f:
+    json.dump(cat_study.best_params, f)
+lgbm_study = mc.tune_model(mc.objective_fun_lightgbm, n_trials=75)
+with open("S3_26/params_lgbm.json", "w") as f:
+    json.dump(lgbm_study.best_params, f)
+rf_study = mc.tune_model(mc.objective_fun_rf, n_trials=75)
+with open("S3_26/params_rf.json", "w") as f:
+    json.dump(rf_study.best_params, f)
+xgb_mod = xgb.XGBClassifier(**exgb_study.best_params)
+cat_mod = CatBoostClassifier(**cat_study.best_params)
+lgbm_mod = LGBMClassifier(**lgbm_study.best_params)
+rf_mod = RandomForestClassifier(**rf_study.best_params)
+xgb_mod.fit(mc.X_train, mc.y_train)
+cat_mod.fit(mc.X_train, mc.y_train)
+lgbm_mod.fit(mc.X_train, mc.y_train)
+rf_mod.fit(mc.X_train, mc.y_train)
+ll_xgb = log_loss(mc.y_test, xgb_mod.predict_proba(mc.X_test))
+ll_cat = log_loss(mc.y_test, cat_mod.predict_proba(mc.X_test))
+ll_lgbm = log_loss(mc.y_test, lgbm_mod.predict_proba(mc.X_test))
+ll_rf = log_loss(mc.y_test, rf_mod.predict_proba(mc.X_test))
+mc.fit_test_data(xgb_mod).to_csv("pred_xgb.csv", index=False)
+mc.fit_test_data(cat_mod).to_csv("pred_cat.csv", index=False)
+mc.fit_test_data(lgbm_mod).to_csv("pred_lgbm.csv", index=False)
+mc.fit_test_data(rf_mod).to_csv("pred_rf.csv", index=False)
+
+
+
+from sklearn.ensemble import VotingClassifier
+
+
+# lgb_1 = LGBMClassifier(**lgbm_params )
+# xgb_1 = XGBClassifier(**xgb_params )
+# cb_1 = CatBoostClassifier(**catboost_params, random_state=42)
+Ensemble = VotingClassifier(estimators = [('lgb', lgbm_model), ('xgb', xgb_model), ('CB', cat_model)],
+                            voting='soft',
+                            weights = [0.35,0.6,0.05]   #Adjust weighting since XGB performs better in local environment
+                            )
+Ensemble.fit(X, y_encoded)
+
+
+# todo: include scaler, impute with kmeans
 # from sklearn.preprocessing import MinMaxScaler
 
 # https://www.kaggle.com/code/ashishkumarak/liver-cirrhosis-survival-prediction-multiclass
 # https://optuna.org/
 # https://practicaldatascience.co.uk/machine-learning/how-to-use-your-gpu-to-accelerate-xgboost-models
+#import matplotlib.pyplot as plt
+#plt.rcParams["figure.figsize"] = (12,6)
 
-params_lgbm = {'iterations': 435, 'learning_rate': 0.17223516709365655, 'min_child_weight': 3.0876406237537144, 'subsample': 0.1839940317845411, 'colsample_bytree': 0.23777566321261087}
-params_cat = {'iterations': 424, 'learning_rate': 0.328632739907193, 'l2_leaf_reg': 1, 'min_data_in_leaf': 34}
-params_xgb = {'max_depth': 6, 'learning_rate': 0.2038999367930274, 'n_estimators': 331, 'min_child_weight': 2, 'gamma': 0.08190835902266243, 'subsample': 0.665389653995815, 'colsample_bytree': 0.322299220021032, 'reg_alpha': 5.9231902273760234e-08, 'reg_lambda': 0.10908267874899857, 'booster': 'gbtree', 'eta': 0.0038577922397016054, 'grow_policy': 'depthwise'}
+#fig, ax = plt.subplots()
+#xi = np.arange(1, 29, step=1)
+#y = np.cumsum(pca.explained_variance_ratio_)
 
-X_train, y_train, X_test, y_test = mc.X_train, mc.y_train, mc.X_test, mc.y_test
-lgbm = LGBMClassifier(**params_lgbm, random_state=420)
-lgbm.fit(X_train, y_train)
-cat = CatBoostClassifier(**params_cat, random_state=420, grow_policy='Lossguide')
-cat.fit(X_train, y_train)
-exgb = xgb.XGBClassifier(**params_xgb, random_state=420)
-exgb.fit(X_train, y_train)
-lgbm_prob = lgbm.predict_proba(X_test)
-lgbm_ll = log_loss(y_test, lgbm_prob) # 0.25638605969931555
-cat_prob = cat.predict_proba(X_test)
-cat_ll = log_loss(y_test, cat_prob) # 0.15390307754220245
-xgb_prob = exgb.predict_proba(X_test)
-xgb_ll = log_loss(y_test, xgb_prob) # 0.15445409594605847
+#plt.ylim(0.0,1.1)
+#plt.plot(xi, y, marker='o', linestyle='--', color='b')
 
-mc.fit_test_data(lgbm).to_csv("lgbm.csv", index=False)
-mc.fit_test_data(cat).to_csv("cat.csv", index=False)
-mc.fit_test_data(exgb).to_csv("xgb.csv", index=False)
+#plt.xlabel('Number of Components')
+#plt.xticks(np.arange(0, 28, step=1)) #change from 0-based array index to 1-based human-readable label
+#plt.ylabel('Cumulative variance (%)')
+#plt.title('The number of components needed to explain variance')
+
+#plt.axhline(y=0.95, color='r', linestyle='-')
+#plt.text(0.5, 0.85, '95% cut-off threshold', color = 'red', fontsize=16)
+
+#ax.grid(axis='x')
+#plt.show()
