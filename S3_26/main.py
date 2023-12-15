@@ -171,7 +171,7 @@ class multiclassifier():
         return cv
     def objective_fun_rf(self, trial):
         params = {
-            'n_estimators': trial.suggest_int('iterations', 50, 1000),
+            'n_estimators': trial.suggest_int('n_estimators', 50, 1000),
             'criterion': trial.suggest_categorical('criterion', ['gini', 'entropy', 'log_loss']),
             'max_depth': trial.suggest_int('max_depth', 1, 30),
             'min_samples_split': trial.suggest_int('min_samples_split', 2, 50),
@@ -201,6 +201,7 @@ exgb_study = mc.tune_model(mc.objective_fun_xgb, n_trials=50)
 cat_study = mc.tune_model(mc.objective_fun_catboost, n_trials=50)
 lgbm_study = mc.tune_model(mc.objective_fun_lightgbm, n_trials=50)
 rf_study = mc.tune_model(mc.objective_fun_rf, n_trials=50)
+rf_study.
 # todo: include scaler
 # from sklearn.preprocessing import MinMaxScaler
 
