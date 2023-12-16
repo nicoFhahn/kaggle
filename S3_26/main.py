@@ -1,8 +1,5 @@
 import json
-import json
-import jenkspy
 import pandas as pd
-import seaborn as sns
 import xgboost as xgb
 import optuna
 import numpy as np
@@ -11,14 +8,12 @@ from sklearn.naive_bayes import BernoulliNB
 from sklearn.ensemble import ExtraTreesClassifier, RandomForestClassifier
 from sklearn.neighbors import KNeighborsClassifier, LocalOutlierFactor
 from sklearn.discriminant_analysis import LinearDiscriminantAnalysis, QuadraticDiscriminantAnalysis
-from sklearn.svm import LinearSVC
 from sklearn.linear_model import LogisticRegression
 from sklearn.model_selection import train_test_split
 from sklearn.metrics import log_loss
-from sklearn.preprocessing import LabelEncoder, StandardScaler, RobustScaler
+from sklearn.preprocessing import LabelEncoder, StandardScaler, RobustScaler, PowerTransformer, MinMaxScaler
 from imblearn.over_sampling import SMOTE, ADASYN
 from sklearn.model_selection import cross_val_score, StratifiedKFold
-from collections import Counter
 from sklearn.decomposition import PCA
 from tqdm import tqdm
 from catboost import CatBoostClassifier
@@ -48,19 +43,9 @@ class multiclassifier():
             LinearDiscriminantAnalysis(), QuadraticDiscriminantAnalysis(),
             LogisticRegression(multi_class='multinomial'), xgb.XGBClassifier(objective='multi:softmax', seed=random_state)
         ]
-    def preprocess_data(self, test_size=.15, outlier_method='keep', synthetic_data=False, scaling_method="robust"):
-        if scaling_method == "robust":
-            scaler = RobustScaler()
-        elif scaling_method == "standard":
-            scaler = StandardScaler()
-        if scaling_method != "none":
-            cols = self.train.select_dtypes(include='number').columns[1:]
-            scaler.fit(self.train[cols])
-            transformed = scaler.transform(self.train[cols])
-            self.train[cols] = transformed
-            scaler.fit(self.test[cols])
-            transformed = scaler.transform(self.test[cols])
-            self.test[cols] = transformed
+    def preprocess_data(self, test_size=.15, outlier_method='keep', synthetic_data=False, scale_data=True):
+        self.train['Stage'] = self.train['Stage'].astype('category')
+        self.test['Stage'] = self.test['Stage'].astype('category')
         if outlier_method != 'keep':
             cols = self.train.select_dtypes(include='number').columns[1:]
             for col in cols:
@@ -76,8 +61,37 @@ class multiclassifier():
                 elif outlier_method == 'drop':
                     self.train = self.train.drop(self.train[mc.train[col] < min_value].index)
                     self.train = self.train.drop(self.train[mc.train[col] > max_value].index)
-        self.train['Stage'] = self.train['Stage'].astype('category')
-        self.test['Stage'] = self.test['Stage'].astype('category')
+        if scale_data:
+            cols = self.train.select_dtypes(include='number').columns[1:]
+            is_normal = [stats.shapiro(self.train[col])[1] >= 0.05 for col in cols]
+            is_skewed = [stats.skewtest(self.train[col])[1] < 0.05 for col in np.array(cols)[~np.array(is_normal)]]
+            normal_cols = cols[is_normal]
+            skewed_cols = np.array(cols)[~np.array(is_normal)][is_skewed]
+            reminder = np.array(cols)[~np.array(is_normal)][~np.array(is_skewed)]
+            if len(normal_cols) > 0:
+                scaler = StandardScaler()
+                scaler.fit(self.train[normal_cols])
+                transformed = scaler.transform(self.train[normal_cols])
+                self.train[normal_cols] = transformed
+                scaler.fit(self.test[normal_cols])
+                transformed = scaler.transform(self.test[normal_cols])
+                self.test[normal_cols] = transformed
+            if len(skewed_cols) > 0:
+                scaler = PowerTransformer(method='yeo-johnson')
+                scaler.fit(self.train[skewed_cols])
+                transformed = scaler.transform(self.train[skewed_cols])
+                self.train[skewed_cols] = transformed
+                scaler.fit(self.test[skewed_cols])
+                transformed = scaler.transform(self.test[skewed_cols])
+                self.test[skewed_cols] = transformed
+            if len(reminder) > 0:
+                scaler = MinMaxScaler()
+                scaler.fit(self.train[reminder])
+                transformed = scaler.transform(self.train[reminder])
+                self.train[reminder] = transformed
+                scaler.fit(self.test[reminder])
+                transformed = scaler.transform(self.test[reminder])
+                self.test[reminder] = transformed
         self.train = pd.concat([self.train, pd.get_dummies(self.train.Drug, prefix='Drug')], axis=1).drop(columns='Drug')
         self.train = pd.concat([self.train, pd.get_dummies(self.train.Sex, prefix='Sex')], axis=1).drop(columns='Sex')
         self.train = pd.concat([self.train, pd.get_dummies(self.train.Ascites, prefix='Ascites')], axis=1).drop(columns='Ascites')
@@ -120,7 +134,7 @@ class multiclassifier():
         params = {
             'max_depth': trial.suggest_int('max_depth', 1, 9),
             'learning_rate': trial.suggest_loguniform('learning_rate', 0.01, 1.0),
-            'n_estimators': trial.suggest_int('n_estimators', 50, 1000),
+            'n_estimators': trial.suggest_int('n_estimators', 50, 600),
             'min_child_weight': trial.suggest_int('min_child_weight', 1, 10),
             'gamma': trial.suggest_loguniform('gamma', 1e-8, 1.0),
             'subsample': trial.suggest_loguniform('subsample', 0.01, 1.0),
@@ -194,9 +208,9 @@ class multiclassifier():
         skf = StratifiedKFold(n_splits=self.splits, shuffle=True, random_state=self.random_state)
         cv = abs(cross_val_score(mod, self.X_train, self.y_train, cv=skf, scoring='neg_log_loss').mean())
         return cv
-    def tune_model(self, objective, n_trials):
+    def tune_model(self, objective, n_trials, n_jobs=1):
         study = optuna.create_study(direction='minimize')
-        study.optimize(objective, n_trials=n_trials)
+        study.optimize(objective, n_trials=n_trials, n_jobs=n_jobs)
         return study
     def fit_test_data(self, estimator):
         probs = pd.DataFrame(estimator.predict_proba(self.test.drop(columns='id')))
@@ -205,19 +219,19 @@ class multiclassifier():
 
 
 
-mc = multiclassifier(file_path='S3_26', use_gpu=True, pca=True, pca_components=14, random_state=7918)
-mc.preprocess_data(synthetic_data=False, test_size=.25, outlier_method='keep', scaling_method="robust")
+mc = multiclassifier(file_path='S3_26', use_gpu=True, pca=True, pca_components=14, random_state=79128)
+mc.preprocess_data(synthetic_data=False, test_size=.25, outlier_method='nearest', scale_data=True)
 mc.train_models(mc.base_models)
-exgb_study = mc.tune_model(mc.objective_fun_xgb, n_trials=75)
+exgb_study = mc.tune_model(mc.objective_fun_xgb, n_trials=50, n_jobs=6)
 with open("S3_26/params_xgb.json", "w") as f:
     json.dump(exgb_study.best_params, f)
-cat_study = mc.tune_model(mc.objective_fun_catboost, n_trials=75)
+cat_study = mc.tune_model(mc.objective_fun_catboost, n_trials=50)
 with open("S3_26/params_catboost.json", "w") as f:
     json.dump(cat_study.best_params, f)
-lgbm_study = mc.tune_model(mc.objective_fun_lightgbm, n_trials=75)
+lgbm_study = mc.tune_model(mc.objective_fun_lightgbm, n_trials=50)
 with open("S3_26/params_lgbm.json", "w") as f:
     json.dump(lgbm_study.best_params, f)
-rf_study = mc.tune_model(mc.objective_fun_rf, n_trials=75)
+rf_study = mc.tune_model(mc.objective_fun_rf, n_trials=50)
 with open("S3_26/params_rf.json", "w") as f:
     json.dump(rf_study.best_params, f)
 xgb_mod = xgb.XGBClassifier(**exgb_study.best_params)

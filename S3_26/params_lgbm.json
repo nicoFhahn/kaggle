@@ -1,1 +1,1 @@
-{"iterations": 499, "learning_rate": 0.09458575879581772, "min_child_weight": 5.432477204570229, "subsample": 0.4074379558339283, "colsample_bytree": 0.3276370922935935}
+{"iterations": 797, "learning_rate": 0.04935774083802302, "min_child_weight": 5.430717777009292, "subsample": 0.016473443611766753, "colsample_bytree": 0.4447587276139258}
