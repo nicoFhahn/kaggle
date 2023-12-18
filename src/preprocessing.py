@@ -7,6 +7,8 @@ from sklearn.decomposition import PCA
 from imblearn.over_sampling import SMOTE, SMOTEN, SMOTENC, BorderlineSMOTE, ADASYN
 from imblearn.combine import SMOTETomek
 from sklearn.preprocessing import StandardScaler, RobustScaler, PowerTransformer, MinMaxScaler
+from sklearn.impute import KNNImputer, SimpleImputer
+
 def remove_outliers(train_df, test_df, method, n_neighbors, contamination):
     org_cols_train, org_cols_test = train_df.columns, test_df.columns
     cols = train_df.select_dtypes(include="number").columns
@@ -40,14 +42,16 @@ def outlier_indices(series1, min_value, max_value):
 
 def replace_categorical(train, test, target):
     y = train[[target]]
-    train = train.drop(columns=target)
-    train_cat = train.select_dtypes(["object", "category"])
+    train_df = train.drop(columns=target)
+    train_cat = train_df.select_dtypes(["object", "category"])
+    if train_cat.shape[1] == 0:
+        return train, test
     test_cat = test.select_dtypes(["object", "category"])
-    train = train.drop(train_cat.columns, axis=1)
+    train_df = train_df.drop(train_cat.columns, axis=1)
     test = test.drop(test_cat.columns, axis=1)
     train_cat = pd.get_dummies(train_cat, prefix=train_cat.columns)
     test_cat = pd.get_dummies(test_cat, prefix=test_cat.columns)
-    train = pd.concat([train, train_cat, y], axis=1)
+    train = pd.concat([train_df, train_cat, y], axis=1)
     test = pd.concat([test, test_cat], axis=1)
     return train, test
 
@@ -114,48 +118,11 @@ def scale_data(X_train, X_test, X_valid):
         X_valid[reminder] = X_valid_transformed
     return X_train, X_test, X_valid
 
-def preprocess_data(self, test_size=.15, outlier_method='keep', synthetic_data=False, scale_data=True):
-    self.train['Stage'] = self.train['Stage'].astype('category')
-    self.test['Stage'] = self.test['Stage'].astype('category')
-    self.train = pd.concat([self.train, pd.get_dummies(self.train.Drug, prefix='Drug')], axis=1).drop(columns='Drug')
-    self.train = pd.concat([self.train, pd.get_dummies(self.train.Sex, prefix='Sex')], axis=1).drop(columns='Sex')
-    self.train = pd.concat([self.train, pd.get_dummies(self.train.Ascites, prefix='Ascites')], axis=1).drop(
-        columns='Ascites')
-    self.train = pd.concat([self.train, pd.get_dummies(self.train.Hepatomegaly, prefix='Hepatomegaly')], axis=1).drop(
-        columns='Hepatomegaly')
-    self.train = pd.concat([self.train, pd.get_dummies(self.train.Spiders, prefix='Spiders')], axis=1).drop(
-        columns='Spiders')
-    self.train = pd.concat([self.train, pd.get_dummies(self.train.Edema, prefix='Edema')], axis=1).drop(columns='Edema')
-    self.train = pd.concat([self.train, pd.get_dummies(self.train.Stage, prefix='Stage')], axis=1).drop(columns='Stage')
-    self.test = pd.concat([self.test, pd.get_dummies(self.test.Drug, prefix='Drug')], axis=1).drop(columns='Drug')
-    self.test = pd.concat([self.test, pd.get_dummies(self.test.Sex, prefix='Sex')], axis=1).drop(columns='Sex')
-    self.test = pd.concat([self.test, pd.get_dummies(self.test.Ascites, prefix='Ascites')], axis=1).drop(
-        columns='Ascites')
-    self.test = pd.concat([self.test, pd.get_dummies(self.test.Hepatomegaly, prefix='Hepatomegaly')], axis=1).drop(
-        columns='Hepatomegaly')
-    self.test = pd.concat([self.test, pd.get_dummies(self.test.Spiders, prefix='Spiders')], axis=1).drop(
-        columns='Spiders')
-    self.test = pd.concat([self.test, pd.get_dummies(self.test.Edema, prefix='Edema')], axis=1).drop(columns='Edema')
-    self.test = pd.concat([self.test, pd.get_dummies(self.test.Stage, prefix='Stage')], axis=1).drop(columns='Stage')
-    if synthetic_data:
-        X, y = SMOTE().fit_resample(self.train.drop(columns=['id', 'Status']),
-                                    self.le.fit_transform(self.train['Status']))
-        if self.pca:
-            pca = PCA(n_components=self.pca_components)
-            X = pd.DataFrame(data=pca.fit_transform(X))
-            self.test = pd.concat([self.test["id"], pd.DataFrame(pca.transform(self.test.drop(columns="id")))], axis=1)
-        self.X_train, self.X_test, self.y_train, self.y_test = train_test_split(X, y, test_size=test_size,
-                                                                                random_state=self.random_state)
-    else:
-        X, y = self.train.drop(columns=['id']), self.le.fit_transform(self.train['Status'])
-        if self.pca:
-            pca = PCA(n_components=self.pca_components)
-            X = pd.concat(
-                [pd.DataFrame(data=pca.fit_transform(X.drop(columns="Status"))), X["Status"].reset_index(drop=True)],
-                axis=1)
-            self.test = pd.concat([self.test["id"], pd.DataFrame(pca.transform(self.test.drop(columns="id")))], axis=1)
-        self.X_train, self.X_test, self.y_train, self.y_test = train_test_split(X, y, test_size=test_size,
-                                                                                random_state=self.random_state,
-                                                                                stratify=y)
-        self.X_train = self.X_train.drop(columns='Status')
-        self.X_test = self.X_test.drop(columns='Status')
+def impute_na(df):
+    numerical_columns = df.select_dtypes(include=['number']).columns
+    categorical_columns = df.select_dtypes(include=['object', 'category']).columns
+    knn_imputer = KNNImputer()
+    df[numerical_columns] = knn_imputer.fit_transform(df[numerical_columns])
+    categorical_imputer = SimpleImputer(strategy='most_frequent')
+    df[categorical_columns] = categorical_imputer.fit_transform(df[categorical_columns])
+    return df
