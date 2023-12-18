@@ -18,16 +18,15 @@ from sklearn.decomposition import PCA
 from tqdm import tqdm
 from catboost import CatBoostClassifier
 from lightgbm import LGBMClassifier
+from sklearn.impute import KNNImputer, SimpleImputer
 
 pd.set_option('display.max_rows', 500)
 pd.set_option('display.max_columns', 500)
 pd.set_option('display.width', 1000)
-
-
 class multiclassifier():
     def __init__(self, file_path, full_data=True, random_state=420, splits=8, use_gpu=False, pca=False, pca_components=10):
         if full_data:
-            self.train = pd.concat([pd.read_csv(f'{file_path}/train.csv'), pd.read_csv(f'{file_path}/train.csv')])
+            self.train = pd.concat([pd.read_csv(f'{file_path}/train.csv'), pd.read_csv(f'{file_path}/cirrhosis.csv')], axis=0).drop(columns="ID")
         else:
             self.train = pd.read_csv(f'{file_path}/train.csv')
         self.test = pd.read_csv(f'{file_path}/test.csv')
@@ -43,13 +42,13 @@ class multiclassifier():
             LinearDiscriminantAnalysis(), QuadraticDiscriminantAnalysis(),
             LogisticRegression(multi_class='multinomial'), xgb.XGBClassifier(objective='multi:softmax', seed=random_state)
         ]
-    def preprocess_data(self, test_size=.15, outlier_method='keep', synthetic_data=False, scale_data=True):
+    def preprocess_data(self, test_size=.15, outlier_method='keep', synthetic_data=False, scale_data=True, impute_data=True):
         self.train['Stage'] = self.train['Stage'].astype('category')
         self.test['Stage'] = self.test['Stage'].astype('category')
         if outlier_method != 'keep':
             cols = self.train.select_dtypes(include='number').columns[1:]
             for col in cols:
-                fit = LocalOutlierFactor(n_neighbors=20, contamination=0.1).fit_predict(self.train[[col]])
+                fit = LocalOutlierFactor(n_neighbors=20, contamination=0.1).fit_predict(self.train[[col]].dropna())
                 temp_df = pd.concat([self.train[[col]].reset_index(drop=True), pd.Series(fit)], axis=1)
                 min_value = temp_df[temp_df[0] != -1][col].min()
                 max_value = temp_df[temp_df[0] != -1][col].max()
@@ -61,6 +60,13 @@ class multiclassifier():
                 elif outlier_method == 'drop':
                     self.train = self.train.drop(self.train[mc.train[col] < min_value].index)
                     self.train = self.train.drop(self.train[mc.train[col] > max_value].index)
+        if impute_data:
+            numerical_columns = self.train.select_dtypes(include=['number']).columns
+            categorical_columns = self.train.select_dtypes(include=['object', 'category']).columns
+            knn_imputer = KNNImputer()
+            self.train[numerical_columns] = knn_imputer.fit_transform(self.train[numerical_columns])
+            categorical_imputer = SimpleImputer(strategy='most_frequent')
+            self.train[categorical_columns] = categorical_imputer.fit_transform(self.train[categorical_columns])
         if scale_data:
             cols = self.train.select_dtypes(include='number').columns[1:]
             is_normal = [stats.shapiro(self.train[col])[1] >= 0.05 for col in cols]
@@ -134,7 +140,7 @@ class multiclassifier():
         params = {
             'max_depth': trial.suggest_int('max_depth', 1, 9),
             'learning_rate': trial.suggest_loguniform('learning_rate', 0.01, 1.0),
-            'n_estimators': trial.suggest_int('n_estimators', 50, 600),
+            'n_estimators': trial.suggest_int('n_estimators', 50, 1000),
             'min_child_weight': trial.suggest_int('min_child_weight', 1, 10),
             'gamma': trial.suggest_loguniform('gamma', 1e-8, 1.0),
             'subsample': trial.suggest_loguniform('subsample', 0.01, 1.0),
@@ -217,27 +223,33 @@ class multiclassifier():
         probs.columns = ['Status_' + c for c in self.le.classes_]
         return pd.concat([self.test[['id']], probs], axis=1)
 
-
-
-mc = multiclassifier(file_path='S3_26', use_gpu=True, pca=True, pca_components=14, random_state=79128)
-mc.preprocess_data(synthetic_data=False, test_size=.25, outlier_method='nearest', scale_data=True)
+mc = multiclassifier(file_path='S3_26', use_gpu=False, pca=False, pca_components=14, random_state=79128)
+mc.preprocess_data(synthetic_data=False, test_size=.25, outlier_method='nearest', scale_data=False, impute_data=True)
 mc.train_models(mc.base_models)
 exgb_study = mc.tune_model(mc.objective_fun_xgb, n_trials=50, n_jobs=6)
 with open("S3_26/params_xgb.json", "w") as f:
     json.dump(exgb_study.best_params, f)
-cat_study = mc.tune_model(mc.objective_fun_catboost, n_trials=50)
+cat_study = mc.tune_model(mc.objective_fun_catboost, n_trials=50, n_jobs=6)
 with open("S3_26/params_catboost.json", "w") as f:
     json.dump(cat_study.best_params, f)
-lgbm_study = mc.tune_model(mc.objective_fun_lightgbm, n_trials=50)
+lgbm_study = mc.tune_model(mc.objective_fun_lightgbm, n_trials=50, n_jobs=6)
 with open("S3_26/params_lgbm.json", "w") as f:
     json.dump(lgbm_study.best_params, f)
-rf_study = mc.tune_model(mc.objective_fun_rf, n_trials=50)
+rf_study = mc.tune_model(mc.objective_fun_rf, n_trials=50, n_jobs=6)
 with open("S3_26/params_rf.json", "w") as f:
     json.dump(rf_study.best_params, f)
-xgb_mod = xgb.XGBClassifier(**exgb_study.best_params)
-cat_mod = CatBoostClassifier(**cat_study.best_params)
-lgbm_mod = LGBMClassifier(**lgbm_study.best_params)
-rf_mod = RandomForestClassifier(**rf_study.best_params)
+with open("S3_26/params_catboost.json") as f:
+    cat_params = json.load(f)
+with open("S3_26/params_lgbm.json") as f:
+    lgbm_params = json.load(f)
+with open("S3_26/params_xgb.json") as f:
+    xgb_params = json.load(f)
+with open("S3_26/params_rf.json") as f:
+    rf_params = json.load(f)
+xgb_mod = xgb.XGBClassifier(**xgb_params)
+cat_mod = CatBoostClassifier(**cat_params)
+lgbm_mod = LGBMClassifier(**lgbm_params)
+rf_mod = RandomForestClassifier(**rf_params)
 xgb_mod.fit(mc.X_train, mc.y_train)
 cat_mod.fit(mc.X_train, mc.y_train)
 lgbm_mod.fit(mc.X_train, mc.y_train)
@@ -246,24 +258,20 @@ ll_xgb = log_loss(mc.y_test, xgb_mod.predict_proba(mc.X_test))
 ll_cat = log_loss(mc.y_test, cat_mod.predict_proba(mc.X_test))
 ll_lgbm = log_loss(mc.y_test, lgbm_mod.predict_proba(mc.X_test))
 ll_rf = log_loss(mc.y_test, rf_mod.predict_proba(mc.X_test))
-mc.fit_test_data(xgb_mod).to_csv("pred_xgb.csv", index=False)
-mc.fit_test_data(cat_mod).to_csv("pred_cat.csv", index=False)
-mc.fit_test_data(lgbm_mod).to_csv("pred_lgbm.csv", index=False)
-mc.fit_test_data(rf_mod).to_csv("pred_rf.csv", index=False)
-
-
+mc.fit_test_data(xgb_mod).to_csv("S3_26/pred_xgb.csv", index=False)
+mc.fit_test_data(cat_mod).to_csv("S3_26/pred_cat.csv", index=False)
+mc.fit_test_data(lgbm_mod).to_csv("S3_26/pred_lgbm.csv", index=False)
+mc.fit_test_data(rf_mod).to_csv("S3_26/pred_rf.csv", index=False)
+ll_total = ll_rf + ll_lgbm + ll_cat + ll_xgb
 
 from sklearn.ensemble import VotingClassifier
 
-
-# lgb_1 = LGBMClassifier(**lgbm_params )
-# xgb_1 = XGBClassifier(**xgb_params )
-# cb_1 = CatBoostClassifier(**catboost_params, random_state=42)
-Ensemble = VotingClassifier(estimators = [('lgb', lgbm_model), ('xgb', xgb_model), ('CB', cat_model)],
+Ensemble = VotingClassifier(estimators = [('lgb', lgbm_mod), ('xgb', xgb_mod), ('CB', cat_mod), ('RF', rf_mod)],
                             voting='soft',
-                            weights = [0.35,0.6,0.05]   #Adjust weighting since XGB performs better in local environment
+                            weights = [0.3, 0.3, 0.2, 0.2]   #Adjust weighting since XGB performs better in local environment
                             )
-Ensemble.fit(X, y_encoded)
+Ensemble.fit(mc.X_train, mc.y_train)
+mc.fit_test_data(Ensemble).to_csv("S3_26/pred_ensemble.csv", index=False)
 
 
 # todo: include scaler, impute with kmeans
