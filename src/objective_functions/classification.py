@@ -11,15 +11,17 @@ from lightgbm import LGBMClassifier
 from xgboost import XGBClassifier
 from sklearn import metrics
 import warnings
+
 warnings.simplefilter("ignore", UserWarning)
+
 
 def hist_gradient_boosting(
         trial,
         X: Union[pl.DataFrame, pd.DataFrame],
         y: Union[pl.Series, pd.Series],
-        random_state: int=9825,
-        n_splits: int=5,
-        scoring:str="f1"
+        random_state: int = 9825,
+        n_splits: int = 5,
+        scoring: str = "f1"
 ):
     params = {
         'learning_rate': trial.suggest_float('learning_rate', 0.01, 1.0),
@@ -37,13 +39,14 @@ def hist_gradient_boosting(
     cv = abs(cross_val_score(mod, X, y, cv=skf, scoring=scoring).mean())
     return cv
 
+
 def random_forest(
         trial,
         X: Union[pl.DataFrame, pd.DataFrame],
         y: Union[pl.Series, pd.Series],
-        random_state: int=9825,
-        n_splits: int=5,
-        scoring:str="f1"
+        random_state: int = 9825,
+        n_splits: int = 5,
+        scoring: str = "f1"
 ):
     params = {
         'n_estimators': trial.suggest_int('n_estimators', 50, 1000),
@@ -59,13 +62,14 @@ def random_forest(
     cv = abs(cross_val_score(mod, X, y, cv=skf, scoring=scoring).mean())
     return cv
 
+
 def cat_boost(
         trial,
         X: Union[pl.DataFrame, pd.DataFrame],
         y: Union[pl.Series, pd.Series],
-        random_state: int=9825,
-        n_splits: int=5,
-        scoring:str="f1",
+        random_state: int = 9825,
+        n_splits: int = 5,
+        scoring: str = "f1",
 ):
     params = {
         'iterations': trial.suggest_int('iterations', 50, 1000),
@@ -83,13 +87,14 @@ def cat_boost(
     cv = abs(cross_val_score(mod, X, y, cv=skf, scoring=scoring).mean())
     return cv
 
+
 def lgbm(
         trial,
         X: Union[pl.DataFrame, pd.DataFrame],
         y: Union[pl.Series, pd.Series],
-        random_state: int=9825,
-        n_splits: int=5,
-        scoring:str="f1"
+        random_state: int = 9825,
+        n_splits: int = 5,
+        scoring: str = "f1"
 ):
     params = {
         'n_estimators': trial.suggest_int('iterations', 50, 1000),
@@ -112,7 +117,7 @@ def xgb(
         y: Union[pl.Series, pd.Series],
         random_state: int = 9825,
         n_splits: int = 5,
-        scoring:str="f1",
+        scoring: str = "f1",
         xgb_scoring: str = "logloss",
         xgb_objective: str = "binary:logistic",
         score_function: Callable = metrics.f1_score,
@@ -154,10 +159,12 @@ def xgb(
         skf = StratifiedKFold(n_splits=n_splits, shuffle=True, random_state=random_state)
         cv_scores = []
         if isinstance(X, np.ndarray):
-            X = pd.DataFrame(X)
             y = pd.Series(y)
         elif isinstance(X, pl.DataFrame):
-            X = X.to_pandas()
+            y = y.to_pandas()
+        if isinstance(y, np.ndarray):
+            y = pd.Series(y)
+        elif isinstance(y, pl.DataFrame):
             y = y.to_pandas()
 
         for train_idx, val_idx in skf.split(X, y):
