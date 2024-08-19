@@ -1,1 +1,0 @@
-{"max_depth": 5, "learning_rate": 0.021882864176616147, "n_estimators": 920, "min_child_weight": 9, "gamma": 0.2808437252458806, "subsample": 0.454760900500504, "colsample_bytree": 0.24501808613446285, "reg_alpha": 1.4121240665817808e-07, "reg_lambda": 1.5048063085099115e-06, "booster": "gbtree", "eta": 0.00047283936741631896, "grow_policy": "depthwise"}
